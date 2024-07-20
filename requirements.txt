@@ -1,0 +1,8 @@
+groq
+keyboard
+pyaudio
+pyperclip
+pystray
+pillow
+python-dotenv
+plyer

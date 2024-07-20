@@ -8,6 +8,10 @@ from datetime import datetime
 import re
 import time
 import sys
+import keyboard
+import pyperclip
+from plyer import notification
+import threading
 
 # Explicitly read .env file
 print("Current working directory:", os.getcwd())
@@ -26,53 +30,49 @@ if not GROQ_API_KEY:
 else:
     print(f"GROQ_API_KEY from .env (first 5 chars): {GROQ_API_KEY[:5]}...")
 
-def record_audio(duration=5):
-    print(f"Recording audio for {duration} seconds...")
-    start_time = time.time()
-    
+# Global variables
+recording = False
+audio_frames = []
+
+def record_audio():
+    global recording, audio_frames
     chunk = 1024
     format = pyaudio.paInt16
     channels = 1
     rate = 16000
 
     p = pyaudio.PyAudio()
-
     stream = p.open(format=format,
                     channels=channels,
                     rate=rate,
                     input=True,
                     frames_per_buffer=chunk)
 
-    frames = []
+    print("Press 'Ctrl+Shift+R' to start/stop recording...")
+    
+    while True:
+        if recording:
+            data = stream.read(chunk)
+            audio_frames.append(data)
+        else:
+            time.sleep(0.1)  # Sleep to reduce CPU usage when not recording
 
-    for _ in range(0, int(rate / chunk * duration)):
-        data = stream.read(chunk)
-        frames.append(data)
-
-    stream.stop_stream()
-    stream.close()
-    p.terminate()
-
-    end_time = time.time()
-    print(f"Recording completed in {end_time - start_time:.2f} seconds")
-
-    return frames, rate
-
-def save_audio(frames, rate):
-    start_time = time.time()
+def save_audio():
+    global audio_frames
+    if not audio_frames:
+        return None
+    
     filename = tempfile.mktemp(suffix=".wav")
     wf = wave.open(filename, 'wb')
     wf.setnchannels(1)
     wf.setsampwidth(pyaudio.PyAudio().get_sample_size(pyaudio.paInt16))
-    wf.setframerate(rate)
-    wf.writeframes(b''.join(frames))
+    wf.setframerate(16000)
+    wf.writeframes(b''.join(audio_frames))
     wf.close()
-    end_time = time.time()
-    print(f"Audio saved to temporary file in {end_time - start_time:.2f} seconds")
+    print(f"Audio saved to temporary file: {filename}")
     return filename
 
 def transcribe_audio(filename):
-    start_time = time.time()
     client = Groq(api_key=GROQ_API_KEY)
 
     with open(filename, "rb") as file:
@@ -82,71 +82,46 @@ def transcribe_audio(filename):
                 model="whisper-large-v3",
                 response_format="text"
             )
-            end_time = time.time()
-            print(f"Transcription completed in {end_time - start_time:.2f} seconds")
             return transcription
         except Exception as e:
-            end_time = time.time()
-            print(f"Transcription failed in {end_time - start_time:.2f} seconds")
-            print(f"Error details: {str(e)}")
+            print(f"Transcription failed. Error details: {str(e)}")
             return f"Transcription failed: {str(e)}"
 
-def save_transcription(transcription):
-    start_time = time.time()
-    # Clean the transcription text to create a valid filename
-    words = re.findall(r'\w+', transcription.lower())
-    first_words = '_'.join(words[:3]) if len(words) >= 3 else '_'.join(words)
-    
-    # Get current date
-    current_date = datetime.now().strftime("%Y%m%d")
-    
-    # Create filename
-    filename = f"{first_words}_{current_date}.txt"
-    
-    # Ensure the filename is valid and not too long
-    filename = re.sub(r'[^\w\-_\. ]', '_', filename)[:255]
-    
-    # Create 'transcriptions' folder if it doesn't exist
-    os.makedirs('transcriptions', exist_ok=True)
-    
-    # Save the transcription
-    filepath = os.path.join('transcriptions', filename)
-    with open(filepath, 'w') as f:
-        f.write(transcription)
-    
-    end_time = time.time()
-    print(f"Transcription saved to file in {end_time - start_time:.2f} seconds")
-    return filepath
+def toggle_recording():
+    global recording, audio_frames
+    recording = not recording
+    if recording:
+        print("Recording started...")
+        audio_frames = []  # Clear previous frames
+    else:
+        print("Recording stopped. Transcribing...")
+        audio_file = save_audio()
+        if audio_file:
+            transcription = transcribe_audio(audio_file)
+            print("Transcription:")
+            print(transcription)
+            pyperclip.copy(transcription)
+            notification.notify(
+                title="Transcription Complete",
+                message="Transcription has been copied to clipboard.",
+                timeout=10
+            )
+            os.remove(audio_file)
+            print(f"Temporary audio file removed: {audio_file}")
 
 def main():
-    overall_start_time = time.time()
-
-    print("Starting transcription process...")
-
-    # Record audio
-    frames, rate = record_audio(duration=5)
+    keyboard.add_hotkey('ctrl+shift+r', toggle_recording)
     
-    # Save audio to temporary file
-    audio_file = save_audio(frames, rate)
+    # Start the recording thread
+    recording_thread = threading.Thread(target=record_audio)
+    recording_thread.start()
 
-    # Transcribe audio
-    transcription = transcribe_audio(audio_file)
-    print("Transcription:")
-    print(transcription)
-
-    # Save transcription to file
-    if not isinstance(transcription, str) or not transcription.startswith("Transcription failed"):
-        saved_file = save_transcription(transcription)
-        print(f"Transcription saved to: {saved_file}")
-    else:
-        print("Transcription failed, not saving to file.")
-
-    # Clean up
-    os.remove(audio_file)
-    print(f"Temporary audio file removed: {audio_file}")
-
-    overall_end_time = time.time()
-    print(f"Total process completed in {overall_end_time - overall_start_time:.2f} seconds")
+    print("Transcription tool is running. Press 'Ctrl+C' to exit.")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("Exiting...")
 
 if __name__ == "__main__":
     main()

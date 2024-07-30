@@ -2,6 +2,11 @@
 .venv/
 venv/
 env/
+transcriptions/
+
+# specific python files
+repo_context_extractor.py
+repository_context.txt
 
 # Environment variables
 .env

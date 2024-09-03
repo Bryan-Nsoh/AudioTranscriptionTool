@@ -35,7 +35,6 @@ else:
 recording = False
 audio_frames = []
 
-
 def record_audio():
     global recording, audio_frames
     chunk = 1024
@@ -57,8 +56,23 @@ def record_audio():
         else:
             time.sleep(0.1)  # Sleep to reduce CPU usage when not recording
 
+def save_audio_to_desktop():
+    global audio_frames
+    if not audio_frames:
+        return None
 
-def save_audio():
+    desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+    filename = os.path.join(desktop, f"recorded_audio_{int(time.time())}.wav")
+    wf = wave.open(filename, "wb")
+    wf.setnchannels(1)
+    wf.setsampwidth(pyaudio.PyAudio().get_sample_size(pyaudio.paInt16))
+    wf.setframerate(16000)
+    wf.writeframes(b"".join(audio_frames))
+    wf.close()
+    print(f"Audio saved to: {filename}")
+    return filename
+
+def save_audio_to_temp():
     global audio_frames
     if not audio_frames:
         return None
@@ -73,7 +87,6 @@ def save_audio():
     print(f"Audio saved to temporary file: {filename}")
     return filename
 
-
 def transcribe_audio(filename):
     client = Groq(api_key=GROQ_API_KEY)
     max_retries = 5
@@ -87,7 +100,7 @@ def transcribe_audio(filename):
                     model="whisper-large-v3",
                     response_format="text",
                 )
-            return transcription
+            return transcription, True
         except Exception as e:
             if attempt < max_retries - 1:
                 delay = min(2**attempt + random.uniform(0, 1), max_delay)
@@ -98,8 +111,7 @@ def transcribe_audio(filename):
                 time.sleep(delay)
             else:
                 print(f"All transcription attempts failed. Error details: {str(e)}")
-                return f"Transcription failed after {max_retries} attempts: {str(e)}"
-
+                return f"Transcription failed after {max_retries} attempts: {str(e)}", False
 
 def toggle_recording():
     global recording, audio_frames
@@ -109,20 +121,29 @@ def toggle_recording():
         audio_frames = []  # Clear previous frames
     else:
         print("Recording stopped. Transcribing...")
-        audio_file = save_audio()
-        if audio_file:
-            transcription = transcribe_audio(audio_file)
+        temp_audio_file = save_audio_to_temp()
+        if temp_audio_file:
+            transcription, success = transcribe_audio(temp_audio_file)
             print("Transcription:")
             print(transcription)
-            pyperclip.copy(transcription)
-            notification.notify(
-                title="Transcription Complete",
-                message="Transcription has been copied to clipboard.",
-                timeout=10,
-            )
-            os.remove(audio_file)
-            print(f"Temporary audio file removed: {audio_file}")
-
+            if success:
+                pyperclip.copy(transcription)
+                notification.notify(
+                    title="Transcription Complete",
+                    message="Transcription has been copied to clipboard.",
+                    timeout=10,
+                )
+                os.remove(temp_audio_file)
+                print(f"Temporary audio file removed: {temp_audio_file}")
+            else:
+                desktop_audio_file = save_audio_to_desktop()
+                notification.notify(
+                    title="Transcription Failed",
+                    message=f"Audio file saved to: {desktop_audio_file}",
+                    timeout=10,
+                )
+                os.remove(temp_audio_file)
+                print(f"Temporary audio file removed: {temp_audio_file}")
 
 def main():
     keyboard.add_hotkey("ctrl+shift+r", toggle_recording)
@@ -137,7 +158,6 @@ def main():
             time.sleep(1)
     except KeyboardInterrupt:
         print("Exiting...")
-
 
 if __name__ == "__main__":
     main()

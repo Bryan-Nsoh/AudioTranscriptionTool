@@ -6,3 +6,5 @@ pystray
 pillow
 python-dotenv
 plyer
+requests
+pyautogui

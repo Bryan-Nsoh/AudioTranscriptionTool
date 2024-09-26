@@ -11,8 +11,9 @@ import pyperclip
 from plyer import notification
 import threading
 import random
+import pyautogui
 
-# Explicitly read .env file
+# Load environment variables
 print("Current working directory:", os.getcwd())
 env_path = os.path.join(os.path.dirname(__file__), ".env")
 print(f"Looking for .env file at: {env_path}")
@@ -34,6 +35,7 @@ else:
 # Global variables
 recording = False
 audio_frames = []
+hotkey = 'ctrl+alt+shift+r'  # Define a unique global hotkey
 
 def record_audio():
     global recording, audio_frames
@@ -47,30 +49,12 @@ def record_audio():
         format=format, channels=channels, rate=rate, input=True, frames_per_buffer=chunk
     )
 
-    print("Press 'Ctrl+Shift+R' to start/stop recording...")
-
     while True:
         if recording:
             data = stream.read(chunk)
             audio_frames.append(data)
         else:
             time.sleep(0.1)  # Sleep to reduce CPU usage when not recording
-
-def save_audio_to_desktop():
-    global audio_frames
-    if not audio_frames:
-        return None
-
-    desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-    filename = os.path.join(desktop, f"recorded_audio_{int(time.time())}.wav")
-    wf = wave.open(filename, "wb")
-    wf.setnchannels(1)
-    wf.setsampwidth(pyaudio.PyAudio().get_sample_size(pyaudio.paInt16))
-    wf.setframerate(16000)
-    wf.writeframes(b"".join(audio_frames))
-    wf.close()
-    print(f"Audio saved to: {filename}")
-    return filename
 
 def save_audio_to_temp():
     global audio_frames
@@ -119,8 +103,18 @@ def toggle_recording():
     if recording:
         print("Recording started...")
         audio_frames = []  # Clear previous frames
+        notification.notify(
+            title="Recording Started",
+            message="Audio recording has begun.",
+            timeout=5,
+        )
     else:
         print("Recording stopped. Transcribing...")
+        notification.notify(
+            title="Recording Stopped",
+            message="Audio recording has stopped. Transcribing...",
+            timeout=5,
+        )
         temp_audio_file = save_audio_to_temp()
         if temp_audio_file:
             transcription, success = transcribe_audio(temp_audio_file)
@@ -131,31 +125,38 @@ def toggle_recording():
                 notification.notify(
                     title="Transcription Complete",
                     message="Transcription has been copied to clipboard.",
-                    timeout=10,
+                    timeout=5,
                 )
+                # Simulate paste operation
+                time.sleep(0.5)  # Brief pause to ensure clipboard is updated
+                pyautogui.hotkey('ctrl', 'v')
                 os.remove(temp_audio_file)
                 print(f"Temporary audio file removed: {temp_audio_file}")
             else:
-                desktop_audio_file = save_audio_to_desktop()
+                # Optionally, handle failed transcription
                 notification.notify(
                     title="Transcription Failed",
-                    message=f"Audio file saved to: {desktop_audio_file}",
-                    timeout=10,
+                    message="Failed to transcribe audio.",
+                    timeout=5,
                 )
                 os.remove(temp_audio_file)
                 print(f"Temporary audio file removed: {temp_audio_file}")
 
 def main():
-    keyboard.add_hotkey("ctrl+shift+r", toggle_recording)
-
     # Start the recording thread
-    recording_thread = threading.Thread(target=record_audio)
+    recording_thread = threading.Thread(target=record_audio, daemon=True)
     recording_thread.start()
 
-    print("Transcription tool is running. Press 'Ctrl+C' to exit.")
+    # Register the global hotkey
+    print(f"Registering global hotkey: {hotkey}")
+    keyboard.add_hotkey(hotkey, toggle_recording)
+
+    print("Transcription tool is running. Press the global hotkey to start/stop recording.")
+    print(f"Hotkey: {hotkey}")
+    print("Press 'Ctrl+C' in the console to exit.")
+
     try:
-        while True:
-            time.sleep(1)
+        keyboard.wait()  # Keep the main thread alive
     except KeyboardInterrupt:
         print("Exiting...")
 

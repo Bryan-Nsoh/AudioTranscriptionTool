@@ -13,10 +13,14 @@ from dotenv import dotenv_values
 import pystray
 from pystray import MenuItem as item
 from PIL import Image, ImageDraw
+import random  # Added import for random module
 
 # -------------------------------
 # Configuration and Initialization
 # -------------------------------
+
+# Disable PyAutoGUI's fail-safe feature
+pyautogui.FAILSAFE = False  # WARNING: Disabling fail-safe is not recommended as it removes a safety mechanism.
 
 # Load environment variables
 env_path = os.path.join(os.path.dirname(__file__), ".env")
@@ -200,9 +204,15 @@ def toggle_recording():
                 pyperclip.copy(transcription)
                 # Simulate paste operation
                 time.sleep(0.5)  # Brief pause to ensure clipboard is updated
-                pyautogui.hotkey('ctrl', 'v')
-                os.remove(temp_audio_file)
-                print("Transcription copied to clipboard and pasted.")
+                try:
+                    pyautogui.hotkey('ctrl', 'v')
+                    print("Transcription copied to clipboard and pasted.")
+                except pyautogui.FailSafeException:
+                    print("PyAutoGUI fail-safe triggered. Paste operation skipped.")
+                except Exception as e:
+                    print(f"An unexpected error occurred during paste operation: {e}")
+                finally:
+                    os.remove(temp_audio_file)
             else:
                 os.remove(temp_audio_file)
                 print("Transcription failed.")

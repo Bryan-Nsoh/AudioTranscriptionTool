@@ -13,7 +13,7 @@ from dotenv import dotenv_values
 import pystray
 from pystray import MenuItem as item
 from PIL import Image, ImageDraw
-import random  # Added import for random module
+import random
 
 # -------------------------------
 # Configuration and Initialization
@@ -89,7 +89,7 @@ def record_audio():
     Continuously records audio in the background when the 'recording' flag is True.
     Handles batching of audio frames every 3 minutes.
     """
-    global recording, audio_frames, current_batch_frames, transcription_buffer
+    global recording, audio_frames, current_batch_frames
 
     p = pyaudio.PyAudio()
     try:
@@ -201,11 +201,7 @@ def process_batch(batch_frames):
     Args:
         batch_frames (list): List of audio frame data.
     """
-    global transcription_buffer, transcribing
-
-    with transcription_lock:
-        transcribing = True
-        update_tray_icon(state='transcribing')
+    global transcription_buffer
 
     temp_audio_file = save_audio_to_temp(batch_frames)
     if temp_audio_file:
@@ -222,10 +218,6 @@ def process_batch(batch_frames):
         os.remove(temp_audio_file)
     else:
         print("Failed to process audio batch.")
-
-    with transcription_lock:
-        transcribing = False
-        update_tray_icon(state='idle')
 
 # -------------------------------
 # Tray Icon and UI Functions
@@ -251,44 +243,57 @@ def toggle_recording():
         update_tray_icon(state='recording')
     else:
         print("Recording stopped. Processing remaining audio frames.")
-        update_tray_icon(state='transcribing')
+        # Don't change the icon here; it remains red until transcription is done
         transcribing = True
 
         # Process any remaining frames that did not complete a full batch
         if current_batch_frames:
             batch = current_batch_frames.copy()
             current_batch_frames.clear()
-            process_batch(batch)
+            threading.Thread(target=process_remaining_batches, args=(batch,), daemon=True).start()
+        else:
+            # No remaining frames; finalize transcription
+            threading.Thread(target=finalize_transcription, daemon=True).start()
 
-        # Wait until all transcription threads have finished
-        while transcribing:
-            time.sleep(0.5)
+def process_remaining_batches(batch):
+    """
+    Processes any remaining audio frames after recording is stopped.
 
-        # Copy the complete transcription buffer to clipboard
-        with transcription_lock:
-            if transcription_buffer.strip():
-                pyperclip.copy(transcription_buffer.strip())
-                # Simulate paste operation
-                time.sleep(0.5)  # Brief pause to ensure clipboard is updated
-                try:
-                    pyautogui.hotkey('ctrl', 'v')
-                    print("Transcription copied to clipboard and pasted.")
-                except pyautogui.FailSafeException:
-                    print("PyAutoGUI fail-safe triggered. Paste operation skipped.")
-                except Exception as e:
-                    print(f"An unexpected error occurred during paste operation: {e}")
-            else:
-                print("No transcription available to copy.")
+    Args:
+        batch (list): List of audio frame data.
+    """
+    process_batch(batch)
+    finalize_transcription()
 
-        update_tray_icon(state='idle')
-        print("Transcription process completed.")
+def finalize_transcription():
+    """
+    Finalizes the transcription process by copying the transcription buffer to the clipboard.
+    """
+    global transcribing
+    with transcription_lock:
+        transcribing = False
+        if transcription_buffer.strip():
+            pyperclip.copy(transcription_buffer.strip())
+            # Simulate paste operation
+            time.sleep(0.5)  # Brief pause to ensure clipboard is updated
+            try:
+                pyautogui.hotkey('ctrl', 'v')
+                print("Transcription copied to clipboard and pasted.")
+            except pyautogui.FailSafeException:
+                print("PyAutoGUI fail-safe triggered. Paste operation skipped.")
+            except Exception as e:
+                print(f"An unexpected error occurred during paste operation: {e}")
+        else:
+            print("No transcription available to copy.")
+    update_tray_icon(state='idle')
+    print("Transcription process completed.")
 
 def update_tray_icon(state='idle'):
     """
     Updates the tray icon based on the current state.
 
     Args:
-        state (str): One of 'idle', 'recording', 'transcribing'.
+        state (str): One of 'idle', 'recording'.
     """
     if tray_icon is None:
         return
@@ -297,8 +302,6 @@ def update_tray_icon(state='idle'):
         tray_icon.icon = icon_idle
     elif state == 'recording':
         tray_icon.icon = icon_recording
-    elif state == 'transcribing':
-        tray_icon.icon = icon_transcribing
 
 def on_toggle(icon, item):
     """

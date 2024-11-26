@@ -40,7 +40,16 @@ else:
 recording = False
 transcribing = False
 audio_frames = []
+current_batch_frames = []
+transcription_buffer = ""
+transcription_lock = threading.Lock()
 hotkey = 'ctrl+alt+shift+r'  # Define a unique global hotkey
+
+# Batch configuration
+BATCH_DURATION_SECONDS = 180  # 3 minutes
+RATE = 16000  # Sample rate
+CHUNK = 1024  # Frames per buffer
+FRAMES_PER_BATCH = int((RATE * BATCH_DURATION_SECONDS) / CHUNK)
 
 # -------------------------------
 # Icon Creation Functions
@@ -78,21 +87,18 @@ tray_icon = None
 def record_audio():
     """
     Continuously records audio in the background when the 'recording' flag is True.
+    Handles batching of audio frames every 3 minutes.
     """
-    global recording, audio_frames
-    chunk = 1024
-    format = pyaudio.paInt16
-    channels = 1
-    rate = 16000
+    global recording, audio_frames, current_batch_frames, transcription_buffer
 
     p = pyaudio.PyAudio()
     try:
         stream = p.open(
-            format=format,
-            channels=channels,
-            rate=rate,
+            format=pyaudio.paInt16,
+            channels=1,
+            rate=RATE,
             input=True,
-            frames_per_buffer=chunk
+            frames_per_buffer=CHUNK
         )
     except Exception as e:
         print(f"Failed to open audio stream: {e}")
@@ -101,8 +107,16 @@ def record_audio():
     while True:
         if recording:
             try:
-                data = stream.read(chunk)
+                data = stream.read(CHUNK)
                 audio_frames.append(data)
+                current_batch_frames.append(data)
+
+                if len(current_batch_frames) >= FRAMES_PER_BATCH:
+                    # Extract the batch
+                    batch = current_batch_frames.copy()
+                    current_batch_frames.clear()
+                    # Start a new thread for transcription
+                    threading.Thread(target=process_batch, args=(batch,), daemon=True).start()
             except Exception as e:
                 print(f"Error reading audio stream: {e}")
                 recording = False
@@ -110,19 +124,25 @@ def record_audio():
         else:
             time.sleep(0.1)  # Sleep to reduce CPU usage when not recording
 
+    stream.stop_stream()
+    stream.close()
+    p.terminate()
+
 # -------------------------------
 # Audio Processing Functions
 # -------------------------------
 
-def save_audio_to_temp():
+def save_audio_to_temp(batch_frames):
     """
-    Saves the recorded audio frames to a temporary WAV file.
+    Saves the provided audio frames to a temporary WAV file.
+
+    Args:
+        batch_frames (list): List of audio frame data.
 
     Returns:
         str or None: Path to the temporary WAV file, or None if saving failed.
     """
-    global audio_frames
-    if not audio_frames:
+    if not batch_frames:
         print("No audio frames to save.")
         return None
 
@@ -131,10 +151,10 @@ def save_audio_to_temp():
         wf = wave.open(filename, "wb")
         wf.setnchannels(1)
         wf.setsampwidth(pyaudio.PyAudio().get_sample_size(pyaudio.paInt16))
-        wf.setframerate(16000)
-        wf.writeframes(b"".join(audio_frames))
+        wf.setframerate(RATE)
+        wf.writeframes(b"".join(batch_frames))
         wf.close()
-        print(f"Audio saved to temporary file: {filename}")
+        print(f"Audio batch saved to temporary file: {filename}")
         return filename
     except Exception as e:
         print(f"Failed to save audio: {e}")
@@ -167,12 +187,45 @@ def transcribe_audio(filename):
         except Exception as e:
             print(f"Transcription attempt {attempt + 1} failed: {e}")
             if attempt < max_retries - 1:
-                delay = min(2**attempt + random.uniform(0, 1), max_delay)
+                delay = min(2 ** attempt + random.uniform(0, 1), max_delay)
                 print(f"Retrying in {delay:.2f} seconds...")
                 time.sleep(delay)
             else:
                 print(f"All transcription attempts failed: {e}")
                 return f"Transcription failed after {max_retries} attempts: {str(e)}", False
+
+def process_batch(batch_frames):
+    """
+    Processes a batch of audio frames: saves to temp file, transcribes, and appends to transcription buffer.
+
+    Args:
+        batch_frames (list): List of audio frame data.
+    """
+    global transcription_buffer, transcribing
+
+    with transcription_lock:
+        transcribing = True
+        update_tray_icon(state='transcribing')
+
+    temp_audio_file = save_audio_to_temp(batch_frames)
+    if temp_audio_file:
+        transcription, success = transcribe_audio(temp_audio_file)
+        if success:
+            with transcription_lock:
+                transcription_buffer += transcription + " "
+            # Optionally, you can provide immediate feedback for each batch
+            print("Batch transcription appended to buffer.")
+        else:
+            with transcription_lock:
+                transcription_buffer += transcription + " "
+            print("Batch transcription failed.")
+        os.remove(temp_audio_file)
+    else:
+        print("Failed to process audio batch.")
+
+    with transcription_lock:
+        transcribing = False
+        update_tray_icon(state='idle')
 
 # -------------------------------
 # Tray Icon and UI Functions
@@ -180,9 +233,9 @@ def transcribe_audio(filename):
 
 def toggle_recording():
     """
-    Toggles the recording state. Starts recording if idle, stops and transcribes if recording.
+    Toggles the recording state. Starts recording if idle, stops and finalizes transcription if recording.
     """
-    global recording, audio_frames, transcribing
+    global recording, audio_frames, current_batch_frames, transcription_buffer, transcribing
 
     if transcribing:
         print("Transcription in progress. Please wait.")
@@ -192,16 +245,29 @@ def toggle_recording():
     if recording:
         print("Recording started.")
         audio_frames = []  # Clear previous frames
+        current_batch_frames = []
+        with transcription_lock:
+            transcription_buffer = ""
         update_tray_icon(state='recording')
     else:
-        print("Recording stopped. Starting transcription.")
+        print("Recording stopped. Processing remaining audio frames.")
         update_tray_icon(state='transcribing')
         transcribing = True
-        temp_audio_file = save_audio_to_temp()
-        if temp_audio_file:
-            transcription, success = transcribe_audio(temp_audio_file)
-            if success:
-                pyperclip.copy(transcription)
+
+        # Process any remaining frames that did not complete a full batch
+        if current_batch_frames:
+            batch = current_batch_frames.copy()
+            current_batch_frames.clear()
+            process_batch(batch)
+
+        # Wait until all transcription threads have finished
+        while transcribing:
+            time.sleep(0.5)
+
+        # Copy the complete transcription buffer to clipboard
+        with transcription_lock:
+            if transcription_buffer.strip():
+                pyperclip.copy(transcription_buffer.strip())
                 # Simulate paste operation
                 time.sleep(0.5)  # Brief pause to ensure clipboard is updated
                 try:
@@ -211,13 +277,11 @@ def toggle_recording():
                     print("PyAutoGUI fail-safe triggered. Paste operation skipped.")
                 except Exception as e:
                     print(f"An unexpected error occurred during paste operation: {e}")
-                finally:
-                    os.remove(temp_audio_file)
             else:
-                os.remove(temp_audio_file)
-                print("Transcription failed.")
+                print("No transcription available to copy.")
+
         update_tray_icon(state='idle')
-        transcribing = False
+        print("Transcription process completed.")
 
 def update_tray_icon(state='idle'):
     """

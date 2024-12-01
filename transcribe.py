@@ -14,6 +14,7 @@ import pystray
 from pystray import MenuItem as item
 from PIL import Image, ImageDraw
 import random
+import traceback
 
 # -------------------------------
 # Configuration and Initialization
@@ -104,29 +105,33 @@ def record_audio():
         print(f"Failed to open audio stream: {e}")
         sys.exit(1)
 
-    while True:
-        if recording:
-            try:
-                data = stream.read(CHUNK)
-                audio_frames.append(data)
-                current_batch_frames.append(data)
+    try:
+        while True:
+            if recording:
+                try:
+                    data = stream.read(CHUNK)
+                    audio_frames.append(data)
+                    current_batch_frames.append(data)
 
-                if len(current_batch_frames) >= FRAMES_PER_BATCH:
-                    # Extract the batch
-                    batch = current_batch_frames.copy()
-                    current_batch_frames.clear()
-                    # Start a new thread for transcription
-                    threading.Thread(target=process_batch, args=(batch,), daemon=True).start()
-            except Exception as e:
-                print(f"Error reading audio stream: {e}")
-                recording = False
-                update_tray_icon(state='idle')
-        else:
-            time.sleep(0.1)  # Sleep to reduce CPU usage when not recording
-
-    stream.stop_stream()
-    stream.close()
-    p.terminate()
+                    if len(current_batch_frames) >= FRAMES_PER_BATCH:
+                        # Extract the batch
+                        batch = current_batch_frames.copy()
+                        current_batch_frames.clear()
+                        # Start a new thread for transcription
+                        threading.Thread(target=process_batch, args=(batch,), daemon=True).start()
+                except Exception as e:
+                    print(f"Error reading audio stream: {e}")
+                    recording = False
+                    update_tray_icon(state='idle')
+            else:
+                time.sleep(0.1)  # Sleep to reduce CPU usage when not recording
+    except Exception as e:
+        print(f"Exception in record_audio thread: {e}")
+        traceback.print_exc()
+    finally:
+        stream.stop_stream()
+        stream.close()
+        p.terminate()
 
 # -------------------------------
 # Audio Processing Functions
@@ -158,6 +163,7 @@ def save_audio_to_temp(batch_frames):
         return filename
     except Exception as e:
         print(f"Failed to save audio: {e}")
+        traceback.print_exc()
         return None
 
 def transcribe_audio(filename):
@@ -192,6 +198,7 @@ def transcribe_audio(filename):
                 time.sleep(delay)
             else:
                 print(f"All transcription attempts failed: {e}")
+                traceback.print_exc()
                 return f"Transcription failed after {max_retries} attempts: {str(e)}", False
 
 def process_batch(batch_frames):
@@ -203,21 +210,24 @@ def process_batch(batch_frames):
     """
     global transcription_buffer
 
-    temp_audio_file = save_audio_to_temp(batch_frames)
-    if temp_audio_file:
-        transcription, success = transcribe_audio(temp_audio_file)
-        if success:
-            with transcription_lock:
-                transcription_buffer += transcription + " "
-            # Optionally, you can provide immediate feedback for each batch
-            print("Batch transcription appended to buffer.")
+    try:
+        temp_audio_file = save_audio_to_temp(batch_frames)
+        if temp_audio_file:
+            transcription, success = transcribe_audio(temp_audio_file)
+            if success:
+                with transcription_lock:
+                    transcription_buffer += transcription + " "
+                print("Batch transcription appended to buffer.")
+            else:
+                with transcription_lock:
+                    transcription_buffer += transcription + " "
+                print("Batch transcription failed.")
+            os.remove(temp_audio_file)
         else:
-            with transcription_lock:
-                transcription_buffer += transcription + " "
-            print("Batch transcription failed.")
-        os.remove(temp_audio_file)
-    else:
-        print("Failed to process audio batch.")
+            print("Failed to process audio batch.")
+    except Exception as e:
+        print(f"Exception in process_batch: {e}")
+        traceback.print_exc()
 
 # -------------------------------
 # Tray Icon and UI Functions
@@ -243,8 +253,8 @@ def toggle_recording():
         update_tray_icon(state='recording')
     else:
         print("Recording stopped. Processing remaining audio frames.")
-        # Don't change the icon here; it remains red until transcription is done
         transcribing = True
+        update_tray_icon(state='transcribing')  # Change icon to green
 
         # Process any remaining frames that did not complete a full batch
         if current_batch_frames:
@@ -262,8 +272,13 @@ def process_remaining_batches(batch):
     Args:
         batch (list): List of audio frame data.
     """
-    process_batch(batch)
-    finalize_transcription()
+    try:
+        process_batch(batch)
+    except Exception as e:
+        print(f"Exception in process_remaining_batches: {e}")
+        traceback.print_exc()
+    finally:
+        finalize_transcription()
 
 def finalize_transcription():
     """
@@ -271,7 +286,6 @@ def finalize_transcription():
     """
     global transcribing
     with transcription_lock:
-        transcribing = False
         if transcription_buffer.strip():
             pyperclip.copy(transcription_buffer.strip())
             # Simulate paste operation
@@ -283,8 +297,10 @@ def finalize_transcription():
                 print("PyAutoGUI fail-safe triggered. Paste operation skipped.")
             except Exception as e:
                 print(f"An unexpected error occurred during paste operation: {e}")
+                traceback.print_exc()
         else:
             print("No transcription available to copy.")
+    transcribing = False
     update_tray_icon(state='idle')
     print("Transcription process completed.")
 
@@ -293,7 +309,7 @@ def update_tray_icon(state='idle'):
     Updates the tray icon based on the current state.
 
     Args:
-        state (str): One of 'idle', 'recording'.
+        state (str): One of 'idle', 'recording', 'transcribing'.
     """
     if tray_icon is None:
         return
@@ -302,6 +318,8 @@ def update_tray_icon(state='idle'):
         tray_icon.icon = icon_idle
     elif state == 'recording':
         tray_icon.icon = icon_recording
+    elif state == 'transcribing':
+        tray_icon.icon = icon_transcribing
 
 def on_toggle(icon, item):
     """
@@ -344,32 +362,35 @@ def main():
     """
     Main function to start the application.
     """
-    # Start the recording thread
-    recording_thread = threading.Thread(target=record_audio, daemon=True)
-    recording_thread.start()
-    print("Recording thread started.")
-
-    # Setup the system tray icon in a separate thread
-    tray_thread = threading.Thread(target=setup_tray, daemon=True)
-    tray_thread.start()
-    print("System tray icon setup complete.")
-
-    # Register the global hotkey
     try:
-        keyboard.add_hotkey(hotkey, toggle_recording)
-        print(f"Global hotkey '{hotkey}' registered.")
-    except Exception as e:
-        print(f"Failed to register hotkey '{hotkey}': {e}")
-        sys.exit(1)
+        # Start the recording thread
+        recording_thread = threading.Thread(target=record_audio, daemon=True)
+        recording_thread.start()
+        print("Recording thread started.")
 
-    print("Audio Transcription Tool is running in the background.")
-    print(f"Press the global hotkey '{hotkey}' to start/stop recording.")
-    print("Right-click the tray icon and select 'Toggle Recording' to start/stop recording.")
-    print("Right-click the tray icon and select 'Quit' to exit the application.")
+        # Setup the system tray icon in a separate thread
+        tray_thread = threading.Thread(target=setup_tray, daemon=True)
+        tray_thread.start()
+        print("System tray icon setup complete.")
 
-    try:
+        # Register the global hotkey
+        try:
+            keyboard.add_hotkey(hotkey, toggle_recording)
+            print(f"Global hotkey '{hotkey}' registered.")
+        except Exception as e:
+            print(f"Failed to register hotkey '{hotkey}': {e}")
+            sys.exit(1)
+
+        print("Audio Transcription Tool is running in the background.")
+        print(f"Press the global hotkey '{hotkey}' to start/stop recording.")
+        print("Right-click the tray icon and select 'Toggle Recording' to start/stop recording.")
+        print("Right-click the tray icon and select 'Quit' to exit the application.")
+
         while True:
             time.sleep(1)  # Keep the main thread alive
+    except Exception as e:
+        print(f"Exception in main thread: {e}")
+        traceback.print_exc()
     except KeyboardInterrupt:
         print("Exiting Audio Transcription Tool.")
         sys.exit(0)

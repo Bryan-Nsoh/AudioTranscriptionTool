@@ -8,13 +8,14 @@ import tempfile
 import pyperclip
 import pyautogui
 import keyboard
-from groq import Groq
+import google.generativeai as genai
 from dotenv import dotenv_values
 import pystray
 from pystray import MenuItem as item
 from PIL import Image, ImageDraw
 import random
 import traceback
+import pathlib
 
 # -------------------------------
 # Configuration and Initialization
@@ -28,14 +29,18 @@ env_path = os.path.join(os.path.dirname(__file__), ".env")
 env_vars = dotenv_values(env_path)
 
 # Check for API key
-GROQ_API_KEY = env_vars.get("GROQ_API_KEY")
-if not GROQ_API_KEY:
-    print("Error: GROQ_API_KEY not found in .env file.")
+GEMINI_API_KEY = env_vars.get("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    print("Error: GEMINI_API_KEY not found in .env file.")
     print("Make sure you have a .env file in the same directory as this script with the line:")
-    print("GROQ_API_KEY=your_api_key_here")
+    print("GEMINI_API_KEY=your_api_key_here")
     sys.exit(1)
 else:
-    print("GROQ_API_KEY loaded successfully.")
+    print("GEMINI_API_KEY loaded successfully.")
+
+# Configure the Generative AI model
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 # Global variables
 recording = False
@@ -47,7 +52,7 @@ transcription_lock = threading.Lock()
 hotkey = 'ctrl+alt+shift+r'  # Define a unique global hotkey
 
 # Batch configuration
-BATCH_DURATION_SECONDS = 180  # 3 minutes
+BATCH_DURATION_SECONDS = 180  # 3 minutes (adjust as needed)
 RATE = 16000  # Sample rate
 CHUNK = 1024  # Frames per buffer
 FRAMES_PER_BATCH = int((RATE * BATCH_DURATION_SECONDS) / CHUNK)
@@ -168,7 +173,7 @@ def save_audio_to_temp(batch_frames):
 
 def transcribe_audio(filename):
     """
-    Sends the audio file to the Groq API for transcription.
+    Sends the audio file to the Gemini API for transcription.
 
     Args:
         filename (str): Path to the WAV audio file.
@@ -176,20 +181,21 @@ def transcribe_audio(filename):
     Returns:
         tuple: (transcription text or error message, success flag)
     """
-    client = Groq(api_key=GROQ_API_KEY)
     max_retries = 5
     max_delay = 120  # 2 minutes in seconds
 
     for attempt in range(max_retries):
         try:
-            with open(filename, "rb") as file:
-                transcription = client.audio.transcriptions.create(
-                    file=(os.path.basename(filename), file.read()),
-                    model="whisper-large-v3",
-                    response_format="text",
-                )
+            with open(filename, "rb") as audio_file:
+              audio_data = {
+                  "mime_type": "audio/wav",
+                  "data": audio_file.read()
+              }
+              prompt = "Generate a transcription of the speech."
+              response = model.generate_content([prompt, audio_data])
+
             print("Transcription successful.")
-            return transcription, True
+            return response.text, True
         except Exception as e:
             print(f"Transcription attempt {attempt + 1} failed: {e}")
             if attempt < max_retries - 1:

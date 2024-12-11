@@ -1,4 +1,3 @@
-groq
 keyboard
 pyaudio
 pyperclip
@@ -8,3 +7,4 @@ python-dotenv
 plyer
 requests
 pyautogui
+google-generativeai

@@ -8,14 +8,13 @@ import tempfile
 import pyperclip
 import pyautogui
 import keyboard
-import google.generativeai as genai
 from dotenv import dotenv_values
 import pystray
 from pystray import MenuItem as item
 from PIL import Image, ImageDraw
 import random
 import traceback
-import pathlib
+import google.generativeai as genai
 
 # -------------------------------
 # Configuration and Initialization
@@ -28,19 +27,21 @@ pyautogui.FAILSAFE = False  # WARNING: Disabling fail-safe is not recommended as
 env_path = os.path.join(os.path.dirname(__file__), ".env")
 env_vars = dotenv_values(env_path)
 
-# Check for API key
+# Check for Gemini API key
 GEMINI_API_KEY = env_vars.get("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
     print("Error: GEMINI_API_KEY not found in .env file.")
     print("Make sure you have a .env file in the same directory as this script with the line:")
-    print("GEMINI_API_KEY=your_api_key_here")
+    print("GEMINI_API_KEY=your_gemini_api_key_here")
     sys.exit(1)
 else:
     print("GEMINI_API_KEY loaded successfully.")
 
-# Configure the Generative AI model
+# Configure Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+
+# Initialize Gemini Model
+model = genai.GenerativeModel("gemini-1.5-flash")
 
 # Global variables
 recording = False
@@ -52,7 +53,7 @@ transcription_lock = threading.Lock()
 hotkey = 'ctrl+alt+shift+r'  # Define a unique global hotkey
 
 # Batch configuration
-BATCH_DURATION_SECONDS = 180  # 3 minutes (adjust as needed)
+BATCH_DURATION_SECONDS = 180  # 3 minutes
 RATE = 16000  # Sample rate
 CHUNK = 1024  # Frames per buffer
 FRAMES_PER_BATCH = int((RATE * BATCH_DURATION_SECONDS) / CHUNK)
@@ -64,26 +65,16 @@ FRAMES_PER_BATCH = int((RATE * BATCH_DURATION_SECONDS) / CHUNK)
 def create_icon(color):
     """
     Creates a simple circular icon of the specified color.
-
-    Args:
-        color (str): Color of the circle (e.g., 'grey', 'red', 'green').
-
-    Returns:
-        PIL.Image.Image: The created icon image.
     """
-    # Create a 64x64 image with transparent background
     image = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    # Draw a filled circle
     draw.ellipse((8, 8, 56, 56), fill=color)
     return image
 
-# Define tray icons for different states
 icon_idle = create_icon('grey')         # Idle state
 icon_recording = create_icon('red')     # Recording state
-icon_transcribing = create_icon('green')  # Transcribing state
+icon_transcribing = create_icon('green') # Transcribing state
 
-# Initialize tray icon with idle state
 tray_icon = None
 
 # -------------------------------
@@ -129,7 +120,7 @@ def record_audio():
                     recording = False
                     update_tray_icon(state='idle')
             else:
-                time.sleep(0.1)  # Sleep to reduce CPU usage when not recording
+                time.sleep(0.1)
     except Exception as e:
         print(f"Exception in record_audio thread: {e}")
         traceback.print_exc()
@@ -145,12 +136,6 @@ def record_audio():
 def save_audio_to_temp(batch_frames):
     """
     Saves the provided audio frames to a temporary WAV file.
-
-    Args:
-        batch_frames (list): List of audio frame data.
-
-    Returns:
-        str or None: Path to the temporary WAV file, or None if saving failed.
     """
     if not batch_frames:
         print("No audio frames to save.")
@@ -174,45 +159,29 @@ def save_audio_to_temp(batch_frames):
 def transcribe_audio(filename):
     """
     Sends the audio file to the Gemini API for transcription.
-
-    Args:
-        filename (str): Path to the WAV audio file.
-
-    Returns:
-        tuple: (transcription text or error message, success flag)
     """
-    max_retries = 5
-    max_delay = 120  # 2 minutes in seconds
+    try:
+        with open(filename, "rb") as file:
+            data = file.read()
 
-    for attempt in range(max_retries):
-        try:
-            with open(filename, "rb") as audio_file:
-              audio_data = {
-                  "mime_type": "audio/wav",
-                  "data": audio_file.read()
-              }
-              prompt = "Generate a transcription of the speech."
-              response = model.generate_content([prompt, audio_data])
-
-            print("Transcription successful.")
-            return response.text, True
-        except Exception as e:
-            print(f"Transcription attempt {attempt + 1} failed: {e}")
-            if attempt < max_retries - 1:
-                delay = min(2 ** attempt + random.uniform(0, 1), max_delay)
-                print(f"Retrying in {delay:.2f} seconds...")
-                time.sleep(delay)
-            else:
-                print(f"All transcription attempts failed: {e}")
-                traceback.print_exc()
-                return f"Transcription failed after {max_retries} attempts: {str(e)}", False
+        prompt = "Generate a verbatim transcript of the speech. Ensure the transcription captures all spoken words and accurately represents the content of the audio. Focus on transcribing the speech clearly and avoid adding any additional commentary or interpretation."
+        response = model.generate_content([
+            prompt,
+            {
+                "mime_type": "audio/wav",
+                "data": data
+            }
+        ])
+        print("Transcription successful.")
+        return response.text, True
+    except Exception as e:
+        print(f"Transcription failed: {e}")
+        traceback.print_exc()
+        return f"Transcription failed: {str(e)}", False
 
 def process_batch(batch_frames):
     """
     Processes a batch of audio frames: saves to temp file, transcribes, and appends to transcription buffer.
-
-    Args:
-        batch_frames (list): List of audio frame data.
     """
     global transcription_buffer
 
@@ -252,7 +221,7 @@ def toggle_recording():
     recording = not recording
     if recording:
         print("Recording started.")
-        audio_frames = []  # Clear previous frames
+        audio_frames = []
         current_batch_frames = []
         with transcription_lock:
             transcription_buffer = ""
@@ -260,23 +229,18 @@ def toggle_recording():
     else:
         print("Recording stopped. Processing remaining audio frames.")
         transcribing = True
-        update_tray_icon(state='transcribing')  # Change icon to green
+        update_tray_icon(state='transcribing')
 
-        # Process any remaining frames that did not complete a full batch
         if current_batch_frames:
             batch = current_batch_frames.copy()
             current_batch_frames.clear()
             threading.Thread(target=process_remaining_batches, args=(batch,), daemon=True).start()
         else:
-            # No remaining frames; finalize transcription
             threading.Thread(target=finalize_transcription, daemon=True).start()
 
 def process_remaining_batches(batch):
     """
     Processes any remaining audio frames after recording is stopped.
-
-    Args:
-        batch (list): List of audio frame data.
     """
     try:
         process_batch(batch)
@@ -295,7 +259,7 @@ def finalize_transcription():
         if transcription_buffer.strip():
             pyperclip.copy(transcription_buffer.strip())
             # Simulate paste operation
-            time.sleep(0.5)  # Brief pause to ensure clipboard is updated
+            time.sleep(0.5)
             try:
                 pyautogui.hotkey('ctrl', 'v')
                 print("Transcription copied to clipboard and pasted.")
@@ -313,9 +277,6 @@ def finalize_transcription():
 def update_tray_icon(state='idle'):
     """
     Updates the tray icon based on the current state.
-
-    Args:
-        state (str): One of 'idle', 'recording', 'transcribing'.
     """
     if tray_icon is None:
         return
@@ -328,35 +289,18 @@ def update_tray_icon(state='idle'):
         tray_icon.icon = icon_transcribing
 
 def on_toggle(icon, item):
-    """
-    Handler for the 'Toggle Recording' menu item.
-
-    Args:
-        icon (pystray.Icon): The tray icon instance.
-        item (pystray.MenuItem): The menu item clicked.
-    """
     toggle_recording()
 
 def on_quit(icon, item):
-    """
-    Handler for the 'Quit' menu item to exit the application.
-
-    Args:
-        icon (pystray.Icon): The tray icon instance.
-        item (pystray.MenuItem): The menu item clicked.
-    """
     icon.stop()
-    os._exit(0)  # Force exit all threads
+    os._exit(0)
 
 def setup_tray():
-    """
-    Sets up the system tray icon with menu options.
-    """
-    global tray_icon
     menu = pystray.Menu(
         item('Toggle Recording', on_toggle),
         item('Quit', on_quit)
     )
+    global tray_icon
     tray_icon = pystray.Icon("AudioTranscriptionTool", icon_idle, "Audio Transcription Tool", menu)
     tray_icon.run()
 
@@ -365,9 +309,6 @@ def setup_tray():
 # -------------------------------
 
 def main():
-    """
-    Main function to start the application.
-    """
     try:
         # Start the recording thread
         recording_thread = threading.Thread(target=record_audio, daemon=True)
@@ -393,7 +334,7 @@ def main():
         print("Right-click the tray icon and select 'Quit' to exit the application.")
 
         while True:
-            time.sleep(1)  # Keep the main thread alive
+            time.sleep(1)
     except Exception as e:
         print(f"Exception in main thread: {e}")
         traceback.print_exc()

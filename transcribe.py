@@ -8,6 +8,7 @@ import tempfile
 import pyperclip
 import pyautogui
 import keyboard
+from groq import Groq
 from dotenv import dotenv_values
 import pystray
 from pystray import MenuItem as item
@@ -27,8 +28,18 @@ pyautogui.FAILSAFE = False  # WARNING: Disabling fail-safe is not recommended as
 env_path = os.path.join(os.path.dirname(__file__), ".env")
 env_vars = dotenv_values(env_path)
 
-# Check for Gemini API key
+# Check for API keys
+GROQ_API_KEY = env_vars.get("GROQ_API_KEY")
 GEMINI_API_KEY = env_vars.get("GEMINI_API_KEY")
+
+if not GROQ_API_KEY:
+    print("Error: GROQ_API_KEY not found in .env file.")
+    print("Make sure you have a .env file in the same directory as this script with the line:")
+    print("GROQ_API_KEY=your_groq_api_key_here")
+    sys.exit(1)
+else:
+    print("GROQ_API_KEY loaded successfully.")
+
 if not GEMINI_API_KEY:
     print("Error: GEMINI_API_KEY not found in .env file.")
     print("Make sure you have a .env file in the same directory as this script with the line:")
@@ -41,7 +52,7 @@ else:
 genai.configure(api_key=GEMINI_API_KEY)
 
 # Initialize Gemini Model
-model = genai.GenerativeModel("gemini-1.5-flash")
+gemini_model = genai.GenerativeModel("gemini-1.5-flash")
 
 # Global variables
 recording = False
@@ -65,16 +76,26 @@ FRAMES_PER_BATCH = int((RATE * BATCH_DURATION_SECONDS) / CHUNK)
 def create_icon(color):
     """
     Creates a simple circular icon of the specified color.
+
+    Args:
+        color (str): Color of the circle (e.g., 'grey', 'red', 'green').
+
+    Returns:
+        PIL.Image.Image: The created icon image.
     """
+    # Create a 64x64 image with transparent background
     image = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
+    # Draw a filled circle
     draw.ellipse((8, 8, 56, 56), fill=color)
     return image
 
+# Define tray icons for different states
 icon_idle = create_icon('grey')         # Idle state
 icon_recording = create_icon('red')     # Recording state
-icon_transcribing = create_icon('green') # Transcribing state
+icon_transcribing = create_icon('green')  # Transcribing state
 
+# Initialize tray icon with idle state
 tray_icon = None
 
 # -------------------------------
@@ -120,7 +141,7 @@ def record_audio():
                     recording = False
                     update_tray_icon(state='idle')
             else:
-                time.sleep(0.1)
+                time.sleep(0.1)  # Sleep to reduce CPU usage when not recording
     except Exception as e:
         print(f"Exception in record_audio thread: {e}")
         traceback.print_exc()
@@ -136,6 +157,12 @@ def record_audio():
 def save_audio_to_temp(batch_frames):
     """
     Saves the provided audio frames to a temporary WAV file.
+
+    Args:
+        batch_frames (list): List of audio frame data.
+
+    Returns:
+        str or None: Path to the temporary WAV file, or None if saving failed.
     """
     if not batch_frames:
         print("No audio frames to save.")
@@ -156,7 +183,42 @@ def save_audio_to_temp(batch_frames):
         traceback.print_exc()
         return None
 
-def transcribe_audio(filename):
+def transcribe_audio_groq(filename):
+    """
+    Sends the audio file to the Groq API for transcription.
+
+    Args:
+        filename (str): Path to the WAV audio file.
+
+    Returns:
+        tuple: (transcription text or error message, success flag)
+    """
+    client = Groq(api_key=GROQ_API_KEY)
+    max_retries = 5
+    max_delay = 120  # 2 minutes in seconds
+
+    for attempt in range(max_retries):
+        try:
+            with open(filename, "rb") as file:
+                transcription = client.audio.transcriptions.create(
+                    file=(os.path.basename(filename), file.read()),
+                    model="whisper-large-v3",
+                    response_format="text",
+                )
+            print("Groq transcription successful.")
+            return transcription, True
+        except Exception as e:
+            print(f"Groq transcription attempt {attempt + 1} failed: {e}")
+            if attempt < max_retries - 1:
+                delay = min(2 ** attempt + random.uniform(0, 1), max_delay)
+                print(f"Retrying Groq in {delay:.2f} seconds...")
+                time.sleep(delay)
+            else:
+                print(f"All Groq transcription attempts failed: {e}")
+                traceback.print_exc()
+                return f"Groq transcription failed after {max_retries} attempts: {str(e)}", False
+
+def transcribe_audio_gemini(filename):
     """
     Sends the audio file to the Gemini API for transcription.
     """
@@ -165,38 +227,49 @@ def transcribe_audio(filename):
             data = file.read()
 
         prompt = "Generate a verbatim transcript of the speech. Ensure the transcription captures all spoken words and accurately represents the content of the audio. Focus on transcribing the speech clearly and avoid adding any additional commentary or interpretation."
-        response = model.generate_content([
+        response = gemini_model.generate_content([
             prompt,
             {
                 "mime_type": "audio/wav",
                 "data": data
             }
         ])
-        print("Transcription successful.")
+        print("Gemini transcription successful.")
         return response.text, True
     except Exception as e:
-        print(f"Transcription failed: {e}")
+        print(f"Gemini transcription failed: {e}")
         traceback.print_exc()
-        return f"Transcription failed: {str(e)}", False
+        return f"Gemini transcription failed: {str(e)}", False
 
 def process_batch(batch_frames):
     """
-    Processes a batch of audio frames: saves to temp file, transcribes, and appends to transcription buffer.
+    Processes a batch of audio frames: saves to temp file, transcribes (with Groq and Gemini fallback), and appends to transcription buffer.
+
+    Args:
+        batch_frames (list): List of audio frame data.
     """
     global transcription_buffer
 
     try:
         temp_audio_file = save_audio_to_temp(batch_frames)
         if temp_audio_file:
-            transcription, success = transcribe_audio(temp_audio_file)
+            # Attempt Groq transcription
+            transcription, success = transcribe_audio_groq(temp_audio_file)
+
+            # Fallback to Gemini if Groq fails
+            if not success:
+                print("Falling back to Gemini for transcription...")
+                transcription, success = transcribe_audio_gemini(temp_audio_file)
+
             if success:
                 with transcription_lock:
                     transcription_buffer += transcription + " "
                 print("Batch transcription appended to buffer.")
             else:
                 with transcription_lock:
-                    transcription_buffer += transcription + " "
-                print("Batch transcription failed.")
+                    transcription_buffer += transcription + " "  # Append error message
+                print("Batch transcription failed with both Groq and Gemini.")
+
             os.remove(temp_audio_file)
         else:
             print("Failed to process audio batch.")
@@ -221,7 +294,7 @@ def toggle_recording():
     recording = not recording
     if recording:
         print("Recording started.")
-        audio_frames = []
+        audio_frames = []  # Clear previous frames
         current_batch_frames = []
         with transcription_lock:
             transcription_buffer = ""
@@ -229,18 +302,23 @@ def toggle_recording():
     else:
         print("Recording stopped. Processing remaining audio frames.")
         transcribing = True
-        update_tray_icon(state='transcribing')
+        update_tray_icon(state='transcribing')  # Change icon to green
 
+        # Process any remaining frames that did not complete a full batch
         if current_batch_frames:
             batch = current_batch_frames.copy()
             current_batch_frames.clear()
             threading.Thread(target=process_remaining_batches, args=(batch,), daemon=True).start()
         else:
+            # No remaining frames; finalize transcription
             threading.Thread(target=finalize_transcription, daemon=True).start()
 
 def process_remaining_batches(batch):
     """
     Processes any remaining audio frames after recording is stopped.
+
+    Args:
+        batch (list): List of audio frame data.
     """
     try:
         process_batch(batch)
@@ -259,7 +337,7 @@ def finalize_transcription():
         if transcription_buffer.strip():
             pyperclip.copy(transcription_buffer.strip())
             # Simulate paste operation
-            time.sleep(0.5)
+            time.sleep(0.5)  # Brief pause to ensure clipboard is updated
             try:
                 pyautogui.hotkey('ctrl', 'v')
                 print("Transcription copied to clipboard and pasted.")
@@ -277,6 +355,9 @@ def finalize_transcription():
 def update_tray_icon(state='idle'):
     """
     Updates the tray icon based on the current state.
+
+    Args:
+        state (str): One of 'idle', 'recording', 'transcribing'.
     """
     if tray_icon is None:
         return
@@ -289,18 +370,35 @@ def update_tray_icon(state='idle'):
         tray_icon.icon = icon_transcribing
 
 def on_toggle(icon, item):
+    """
+    Handler for the 'Toggle Recording' menu item.
+
+    Args:
+        icon (pystray.Icon): The tray icon instance.
+        item (pystray.MenuItem): The menu item clicked.
+    """
     toggle_recording()
 
 def on_quit(icon, item):
+    """
+    Handler for the 'Quit' menu item to exit the application.
+
+    Args:
+        icon (pystray.Icon): The tray icon instance.
+        item (pystray.MenuItem): The menu item clicked.
+    """
     icon.stop()
-    os._exit(0)
+    os._exit(0)  # Force exit all threads
 
 def setup_tray():
+    """
+    Sets up the system tray icon with menu options.
+    """
+    global tray_icon
     menu = pystray.Menu(
         item('Toggle Recording', on_toggle),
         item('Quit', on_quit)
     )
-    global tray_icon
     tray_icon = pystray.Icon("AudioTranscriptionTool", icon_idle, "Audio Transcription Tool", menu)
     tray_icon.run()
 
@@ -309,6 +407,9 @@ def setup_tray():
 # -------------------------------
 
 def main():
+    """
+    Main function to start the application.
+    """
     try:
         # Start the recording thread
         recording_thread = threading.Thread(target=record_audio, daemon=True)
@@ -334,7 +435,7 @@ def main():
         print("Right-click the tray icon and select 'Quit' to exit the application.")
 
         while True:
-            time.sleep(1)
+            time.sleep(1)  # Keep the main thread alive
     except Exception as e:
         print(f"Exception in main thread: {e}")
         traceback.print_exc()

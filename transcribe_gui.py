@@ -7,6 +7,7 @@ import json
 import tempfile
 import traceback
 import random
+import ctypes
 from pathlib import Path
 
 import pyaudio
@@ -21,6 +22,11 @@ from tkinter import messagebox, ttk
 import pystray
 from pystray import MenuItem as item
 from PIL import Image, ImageDraw
+
+# Add at the start of your program, after imports
+if sys.platform == 'win32':
+    myappid = 'mycompany.audiotranscriptiontool.1.0'
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
 
 # -----------------------------------------------------
 # Configuration

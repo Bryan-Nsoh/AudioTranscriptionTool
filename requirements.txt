@@ -1,10 +1,10 @@
 keyboard
+groq
 pyaudio
 pyperclip
 pystray
 pillow
 python-dotenv
-plyer
 requests
 pyautogui
 google-generativeai

@@ -2,6 +2,7 @@ keyboard
 groq
 pyaudio
 pyperclip
+pyinstaller
 pystray
 pillow
 python-dotenv

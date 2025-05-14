@@ -1,0 +1,15 @@
+# Core functionality
+groq
+pyaudio
+pyperclip
+python-dotenv
+
+# macOS Menu Bar GUI
+rumps
+
+# Desktop Notifications
+plyer # Kept for now, but its notification part is unused if we switch to rumps.notification
+# pyobjus # REMOVED - causes build errors with Python 3.13
+
+# Image processing (for PyInstaller icons, general utility)
+Pillow

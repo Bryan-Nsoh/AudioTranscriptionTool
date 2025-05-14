@@ -1,3 +1,5 @@
+AudioTranscriptionTool_MacOS_Build_Output/
+
 # Virtual environment
 .venv/
 venv/

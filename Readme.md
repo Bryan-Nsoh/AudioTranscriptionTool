@@ -1,89 +1,117 @@
-# Audio Transcription Tool
+# Audio Transcription Tool v2.0
 
-## Description
-
-This Audio Transcription Tool is a Python-based application that allows users to record audio and automatically transcribe it using the Groq API. The tool runs continuously in the background, waiting for user input to start and stop recording. Once a recording is stopped, it's automatically transcribed, and the transcription is copied to the clipboard for easy pasting.
+Modern Windows-only audio transcription tool with intelligent silence detection and multi-provider fallback support.
 
 ## Features
 
-- Continuous operation with hotkey-triggered recording
-- Arbitrary-length audio recording
-- Automatic transcription using Groq API
-- Clipboard integration for easy access to transcriptions
-- Desktop notifications upon transcription completion
+- **OpenAI gpt-4o-mini-transcribe** as primary transcription service
+- Optional **Groq Whisper-large-v3** and **Gemini 1.5 Flash** fallbacks
+- **WebRTC-VAD** with adjustable aggressiveness (toggle off at 0)
+- Real-time recording with 3-minute batch processing
+- System tray integration
+- Configurable hotkeys
+- Automatic clipboard paste
 
-## Requirements
+## Installation
 
-- Python 3.7+
-- Groq API key
-- Required Python packages (see `requirements.txt`)
+### Using UV (Recommended)
 
-## Setup
+```bash
+# Install UV
+pip install uv
 
-1. Clone this repository:
-   ```
-   git clone https://github.com/yourusername/audio-transcription-tool.git
-   cd audio-transcription-tool
-   ```
+# Install dependencies
+uv pip install -r requirements.txt
+```
 
-2. Create and activate a virtual environment:
-   ```
-   python -m venv .venv
-   source .venv/bin/activate  # On Windows, use `.venv\Scripts\activate`
-   ```
+### Using pip
 
-3. Install the required packages:
-   ```
-   pip install -r requirements.txt
-   ```
+```bash
+pip install -r requirements.txt
+```
 
-4. Create a `.env` file in the project root directory and add your Groq API key:
-   ```
-   GROQ_API_KEY=your_api_key_here
-   ```
+## Configuration
+
+1. Run the application: `uv run python src/transcribe_gui.py`
+2. Click **Settings**
+3. Configure:
+   - **Transcription Service** (Auto/OpenAI/Groq/Gemini)
+   - API key for the selected service(s)
+   - **Hotkey** (default: Alt+R)
+   - **Voice Detection Aggressiveness** (0–3, set to 0 to disable)
 
 ## Usage
 
-1. Run the script:
-   ```
-   python transcribe.py
-   ```
+1. Press the configured hotkey or click **Record**
+2. Speak (silence is automatically filtered out)
+3. Press hotkey again or click **Stop Recording**
+4. Transcription automatically pastes to active window
 
-2. The script will run continuously in the background. Use the following hotkeys:
-   - Press `Ctrl+Shift+R` to start recording
-   - Press `Ctrl+Shift+R` again to stop recording and trigger transcription
-   - The transcription will be automatically copied to your clipboard
-   - A desktop notification will appear when transcription is complete
+## Building Executable
 
-3. To exit the script, press `Ctrl+C` in the console.
+```bash
+# Recreate PyInstaller build
+uv tool run --with keyboard --with groq --with openai --with pyaudio --with pyperclip --with pystray --with pillow --with requests --with pyautogui --with google-generativeai --with webrtcvad ^
+    pyinstaller --clean --distpath dist --workpath build --noconfirm transcribe_gui.spec
+```
 
-## Creating a Shortcut (Windows)
+Executable will be in `dist/transcribe_gui/`
 
-To create a desktop shortcut for easy access:
+## Silence Detection
 
-1. Right-click on your desktop and select "New" > "Shortcut"
-2. Enter the following as the location:
-   ```
-   %ComSpec% /k "cd /d path\to\your\project && .venv\Scripts\activate && python transcribe.py && pause"
-   ```
-   Replace `path\to\your\project` with the actual path to your project directory.
-3. Name your shortcut and click "Finish"
+WebRTC-VAD filters out non-speech audio in real-time:
+- Saves API costs by skipping silence
+- Adjust aggressiveness in Settings (higher = more aggressive filtering)
+- Set to **0** to capture every frame (useful when debugging clipping)
 
 ## Troubleshooting
 
-- If you encounter any issues with the Groq API key, ensure that your `.env` file is in the same directory as the `transcribe.py` script and contains the correct API key.
-- Make sure all required packages are installed by running `pip install -r requirements.txt`.
-- If you're having trouble with audio recording, ensure that your microphone is properly connected and set as the default input device.
+**VAD model fails to load:**
+- WebRTC-VAD ships with the app; if it fails, try reinstalling dependencies
 
-## Contributing
+**Microphone not detected:**
+- Check Windows audio input settings
+- Ensure no other application is using the microphone
 
-Contributions to this project are welcome. Please fork the repository and submit a pull request with your changes.
+**Transcription fails:**
+- Verify API keys are correct
+- Check internet connection
+- Try fallback providers
+
+## Architecture
+
+```
+Recording → WebRTC-VAD → 3-min batches → OpenAI → (Groq) → (Gemini) → Clipboard → Auto-paste
+```
+
+## Project Layout
+
+```
+AudioTranscriptionTool/
+├── assets/
+│   └── icons/
+│       ├── recorder_icon.ico
+│       └── recorder_icon.png
+├── src/
+│   └── transcribe_gui.py
+├── .env
+├── .gitignore
+├── HANDOFF.md
+├── LICENSE
+├── README.md
+├── pyproject.toml
+├── requirements.txt
+├── transcribe_gui.spec
+└── uv.lock
+```
+
+## Requirements
+
+- Windows 10/11
+- Python 3.8+
+- Active internet connection
+- Microphone
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-- This project uses the Groq API for audio transcription.
-- Thanks to the developers of PyAudio, keyboard, pyperclip, and plyer for their excellent libraries.
+MIT

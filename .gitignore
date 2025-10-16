@@ -24,8 +24,10 @@ __pycache__/
 # Distribution / packaging
 .Python
 build/
+build_new/
 develop-eggs/
 dist/
+dist_new/
 downloads/
 eggs/
 .eggs/
@@ -43,6 +45,7 @@ share/python-wheels/
 # PyInstaller
 *.manifest
 *.spec
+!transcribe_gui.spec
 
 # Installer logs
 pip-log.txt

@@ -39,19 +39,26 @@ pyautogui.FAILSAFE = False
 # Configuration
 # -----------------------------------------------------
 
-APP_ROOT = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, 'frozen', False):
+    BUNDLE_ROOT = Path(getattr(sys, '_MEIPASS', Path(sys.executable).resolve().parent))
+    PROJECT_ROOT = BUNDLE_ROOT
+else:
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent
+    BUNDLE_ROOT = PROJECT_ROOT
+
+ASSETS_DIR = PROJECT_ROOT / "assets" / "icons"
 
 if getattr(sys, 'frozen', False):
     appdata_dir = os.getenv("APPDATA")
     if appdata_dir:
-        BASE_DIR = os.path.join(appdata_dir, "AudioTranscriptionTool")
+        BASE_DIR = Path(appdata_dir) / "AudioTranscriptionTool"
     else:
-        BASE_DIR = APP_ROOT
+        BASE_DIR = PROJECT_ROOT
 else:
-    BASE_DIR = APP_ROOT
+    BASE_DIR = PROJECT_ROOT
 
-os.makedirs(BASE_DIR, exist_ok=True)
-CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+BASE_DIR.mkdir(parents=True, exist_ok=True)
+CONFIG_FILE = BASE_DIR / "config.json"
 
 # Audio constants
 BATCH_DURATION_SECONDS = 180
@@ -96,13 +103,13 @@ VAD_AGGRESSIVENESS = 2  # Default VAD aggressiveness (0-3, higher = more aggress
 SELECTED_SERVICE = "auto"
 
 
-def resource_path(filename):
-    """Resolve resource path for bundled/frozen builds."""
+def asset_path(filename: str) -> str:
+    """Resolve asset path for bundled/frozen builds."""
     if getattr(sys, 'frozen', False):
-        base_path = getattr(sys, '_MEIPASS', APP_ROOT)
+        base_path = BUNDLE_ROOT / "assets" / "icons"
     else:
-        base_path = APP_ROOT
-    return os.path.join(base_path, filename)
+        base_path = ASSETS_DIR
+    return str((base_path / filename).resolve())
 
 # -----------------------------------------------------
 # WebRTC-VAD Setup
@@ -144,7 +151,7 @@ def is_speech(audio_chunk, aggressiveness=2):
 
 def load_config():
     """Load configuration from JSON file."""
-    if not os.path.isfile(CONFIG_FILE):
+    if not CONFIG_FILE.is_file():
         return {
             "OPENAI_API_KEY": "",
             "GROQ_API_KEY": "",
@@ -154,7 +161,7 @@ def load_config():
             "SELECTED_SERVICE": "auto"
         }
     try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+        with CONFIG_FILE.open("r", encoding="utf-8") as f:
             data = json.load(f)
         data.setdefault("OPENAI_API_KEY", "")
         data.setdefault("GROQ_API_KEY", "")
@@ -186,7 +193,7 @@ def save_config(openai_key, groq_key, gemini_key, hotkey_value, vad_aggressivene
         "VAD_AGGRESSIVENESS": int(vad_aggressiveness),
         "SELECTED_SERVICE": selected_service
     }
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+    with CONFIG_FILE.open("w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
 
 # Load initial config
@@ -685,7 +692,7 @@ root.title("Audio Transcription Tool v2.0")
 root.geometry("400x220")
 root.resizable(False, False)
 
-icon_file = resource_path("recorder_icon.ico")
+icon_file = asset_path("recorder_icon.ico")
 if os.path.exists(icon_file):
     try:
         root.iconbitmap(icon_file)

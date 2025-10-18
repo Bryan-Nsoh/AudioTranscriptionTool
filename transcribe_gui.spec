@@ -1,13 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-import importlib.util
-from PyInstaller.utils.hooks import collect_dynamic_libs
-
-binaries = collect_dynamic_libs('webrtcvad')
 datas = []
-
-spec = importlib.util.find_spec('webrtcvad')
-if spec and spec.origin:
-    datas.append((spec.origin, '.'))
 
 for icon_file in ("assets/icons/recorder_icon.ico", "assets/icons/recorder_icon.png"):
     datas.append((icon_file, 'assets/icons'))
@@ -16,13 +8,13 @@ for icon_file in ("assets/icons/recorder_icon.ico", "assets/icons/recorder_icon.
 a = Analysis(
     ['src/transcribe_gui.py'],
     pathex=[],
-    binaries=binaries,
+    binaries=[],
     datas=datas,
-    hiddenimports=['webrtcvad'],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['tensorboard', 'torch.utils.tensorboard'],
     noarchive=False,
     optimize=0,
 )
@@ -44,7 +36,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='NONE',
+    icon='assets/icons/recorder_icon.ico',
 )
 coll = COLLECT(
     exe,

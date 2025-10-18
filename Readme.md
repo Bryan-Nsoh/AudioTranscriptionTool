@@ -6,7 +6,7 @@ Modern Windows-only audio transcription tool with intelligent silence detection 
 
 - **OpenAI gpt-4o-mini-transcribe** as primary transcription service
 - Optional **Groq Whisper-large-v3** and **Gemini 1.5 Flash** fallbacks
-- **WebRTC-VAD** with adjustable aggressiveness (toggle off at 0)
+- **Silero VAD** with adjustable aggressiveness (toggle off at 0)
 - Real-time recording with 3-minute batch processing
 - System tray integration
 - Configurable hotkeys
@@ -51,7 +51,7 @@ pip install -r requirements.txt
 
 ```bash
 # Recreate PyInstaller build
-uv tool run --with keyboard --with groq --with openai --with pyaudio --with pyperclip --with pystray --with pillow --with requests --with pyautogui --with google-generativeai --with webrtcvad ^
+uv tool run --with keyboard --with groq --with openai --with pyaudio --with pyperclip --with pystray --with pillow --with requests --with pyautogui --with google-generativeai --with torch --with onnxruntime ^
     pyinstaller --clean --distpath dist --workpath build --noconfirm transcribe_gui.spec
 ```
 
@@ -59,7 +59,7 @@ Executable will be in `dist/transcribe_gui/`
 
 ## Silence Detection
 
-WebRTC-VAD filters out non-speech audio in real-time:
+Silero VAD filters out non-speech audio in real-time:
 - Saves API costs by skipping silence
 - Adjust aggressiveness in Settings (higher = more aggressive filtering)
 - Set to **0** to capture every frame (useful when debugging clipping)
@@ -67,7 +67,7 @@ WebRTC-VAD filters out non-speech audio in real-time:
 ## Troubleshooting
 
 **VAD model fails to load:**
-- WebRTC-VAD ships with the app; if it fails, try reinstalling dependencies
+- First run downloads the Silero model via Torch Hub; ensure internet access or clear the Torch cache if it fails
 
 **Microphone not detected:**
 - Check Windows audio input settings
@@ -81,7 +81,7 @@ WebRTC-VAD filters out non-speech audio in real-time:
 ## Architecture
 
 ```
-Recording → WebRTC-VAD → 3-min batches → OpenAI → (Groq) → (Gemini) → Clipboard → Auto-paste
+Recording -> Silero VAD -> 3-min batches -> OpenAI -> (Groq) -> (Gemini) -> Clipboard -> Auto-paste
 ```
 
 ## Project Layout

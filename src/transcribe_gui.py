@@ -1,7 +1,7 @@
 """
 Audio Transcription Tool v2.0
 Modern Windows-only transcription with OpenAI, Groq, and Gemini support.
-Includes WebRTC-VAD for intelligent silence detection.
+Includes Silero VAD for intelligent silence detection.
 """
 
 import os
@@ -15,7 +15,6 @@ import tempfile
 import threading
 from pathlib import Path
 
-import webrtcvad
 import pyaudio
 import keyboard
 import pyautogui
@@ -24,6 +23,10 @@ import pystray
 import tkinter as tk
 from tkinter import messagebox, ttk
 from PIL import Image, ImageDraw
+try:
+    import torch
+except ImportError:
+    torch = None
 from pystray import MenuItem as item
 from openai import OpenAI
 from groq import Groq
@@ -63,9 +66,8 @@ CONFIG_FILE = BASE_DIR / "config.json"
 # Audio constants
 BATCH_DURATION_SECONDS = 180
 RATE = 16000
-VAD_FRAME_DURATION_MS = 30  # WebRTC-VAD frame duration (10, 20, or 30 ms)
+VAD_FRAME_DURATION_MS = 30  # Silero VAD frame duration (10, 20, or 30 ms)
 CHUNK = int((RATE * VAD_FRAME_DURATION_MS) / 1000)  # 480 samples at 16kHz (~30 ms)
-VAD_FRAME_SIZE_BYTES = CHUNK * 2  # 16-bit mono PCM -> 960 bytes
 FRAMES_PER_BATCH = int((RATE * BATCH_DURATION_SECONDS) / CHUNK)
 POST_STOP_EXTRA_CHUNKS = 4  # Capture a short tail after stopping to avoid clipped speech
 
@@ -102,6 +104,15 @@ HOTKEY = "alt+r"
 VAD_AGGRESSIVENESS = 2  # Default VAD aggressiveness (0-3, higher = more aggressive)
 SELECTED_SERVICE = "auto"
 
+if torch is not None:
+    torch.set_grad_enabled(False)
+
+VAD_THRESHOLD_MAP = {
+    1: 0.25,
+    2: 0.35,
+    3: 0.45,
+}
+
 
 def asset_path(filename: str) -> str:
     """Resolve asset path for bundled/frozen builds."""
@@ -112,37 +123,48 @@ def asset_path(filename: str) -> str:
     return str((base_path / filename).resolve())
 
 # -----------------------------------------------------
-# WebRTC-VAD Setup
+# Silero VAD Setup
 # -----------------------------------------------------
 
 def load_vad_model():
-    """Initialize WebRTC-VAD."""
+    """Initialize Silero VAD."""
     global vad_model
+    if torch is None:
+        print("Torch not available; disabling VAD.")
+        return False
     try:
-        vad_model = webrtcvad.Vad(VAD_AGGRESSIVENESS)
+        vad_model, _ = torch.hub.load(
+            repo_or_dir="snakers4/silero-vad",
+            model="silero_vad",
+            force_reload=False,
+            trust_repo=True,
+        )
+        vad_model.eval()
         return True
     except Exception as e:
-        print(f"Failed to load VAD: {e}")
+        print(f"Failed to load Silero VAD: {e}")
+        vad_model = None
         return False
+
 
 def is_speech(audio_chunk, aggressiveness=2):
     """
-    Detect if audio chunk contains speech using WebRTC-VAD.
+    Detect if audio chunk contains speech using Silero VAD.
     Returns True if speech detected, False otherwise.
     """
-    if vad_model is None or aggressiveness <= 0:
-        return True  # If VAD not loaded, assume all audio is speech
+    if vad_model is None or torch is None or aggressiveness <= 0:
+        return True
 
     try:
-        # WebRTC VAD expects specific frame sizes for 16kHz: 160, 320, or 480 samples
-        # For 30ms at 16kHz, we expect 480 samples -> 960 bytes for int16 mono
-        if len(audio_chunk) != VAD_FRAME_SIZE_BYTES:
-            return True  # If wrong size, don't filter
-
-        vad_model.set_mode(int(aggressiveness))
-
-        return vad_model.is_speech(audio_chunk, RATE)
-    except Exception:
+        audio_tensor = torch.frombuffer(audio_chunk, dtype=torch.int16).float().div_(32768.0)
+        if audio_tensor.numel() == 0:
+            return False
+        threshold = VAD_THRESHOLD_MAP.get(int(aggressiveness), 0.35)
+        with torch.no_grad():
+            speech_prob = vad_model(audio_tensor, RATE).item()
+        return speech_prob >= threshold
+    except Exception as exc:
+        print(f"Silero VAD error: {exc}")
         return True  # On error, don't filter
 
 # -----------------------------------------------------
@@ -267,7 +289,7 @@ def setup_tray():
 def record_audio():
     """
     Background thread that continuously records audio.
-    Filters silent chunks using WebRTC-VAD before batching.
+    Filters silent chunks using Silero VAD before batching.
     """
     global recording, audio_frames, current_batch_frames, VAD_AGGRESSIVENESS
     global post_stop_chunks, stop_requested
@@ -541,8 +563,8 @@ def open_settings():
     service_combobox.pack(pady=5)
 
     # VAD Aggressiveness
-    tk.Label(settings_window, text="Voice Detection Aggressiveness (0-3, 0=Off):", font=("Arial", 10)).pack(pady=(10, 0))
-    tk.Label(settings_window, text="0=Off (no filtering) | 3=Strict (more filtering)", font=("Arial", 8), fg="gray").pack()
+    tk.Label(settings_window, text="Silero VAD Sensitivity (0-3, 0=Off):", font=("Arial", 10)).pack(pady=(10, 0))
+    tk.Label(settings_window, text="Higher values demand clearer speech before passing audio", font=("Arial", 8), fg="gray").pack()
     vad_frame = tk.Frame(settings_window)
     vad_frame.pack(pady=5)
     vad_scale = tk.Scale(vad_frame, from_=0, to=3, resolution=1, orient=tk.HORIZONTAL, length=360)
@@ -702,7 +724,7 @@ if os.path.exists(icon_file):
 title_label = tk.Label(root, text="Audio Transcription Tool", font=("Arial", 14, "bold"))
 title_label.pack(pady=10)
 
-subtitle_label = tk.Label(root, text="OpenAI • Groq • Gemini | WebRTC-VAD", font=("Arial", 9), fg="gray")
+subtitle_label = tk.Label(root, text="OpenAI • Groq • Gemini | Silero VAD", font=("Arial", 9), fg="gray")
 subtitle_label.pack()
 
 status_label = tk.Label(root, text="Ready", fg="blue", font=("Arial", 10))
@@ -725,7 +747,7 @@ root.after(500, prompt_for_keys_if_needed)
 def start_threads():
     """Initialize all background threads."""
     # Load VAD
-    print("Initializing WebRTC-VAD...")
+    print("Initializing Silero VAD...")
     load_vad_model()
 
     # Start recording thread

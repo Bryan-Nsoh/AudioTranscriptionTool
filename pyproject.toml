@@ -2,7 +2,7 @@
 name = "audio-transcription-tool"
 version = "2.0.0"
 description = "Real-time audio transcription with OpenAI, Groq, and Gemini support"
-requires-python = ">=3.9"
+requires-python = ">=3.10,<3.14"
 dependencies = [
     "keyboard>=0.13.5",
     "groq>=0.4.0",
@@ -14,8 +14,9 @@ dependencies = [
     "requests>=2.31.0",
     "pyautogui>=0.9.54",
     "google-generativeai>=0.3.0",
-    "torch==2.9.0+cpu; platform_system == 'Windows'",
+    "torch>=2.0.0; platform_system == 'Windows'",
     "onnxruntime>=1.23.1",
+    "deepgram-sdk>=3.0.0",
 ]
 
 [project.optional-dependencies]

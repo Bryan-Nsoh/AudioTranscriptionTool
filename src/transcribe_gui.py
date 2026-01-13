@@ -42,19 +42,23 @@ if getattr(sys, 'frozen', False):
 else:
     PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# Load .env from project root
-ENV_FILE = PROJECT_ROOT / ".env"
-load_dotenv(ENV_FILE)
-
-# Config storage
-if getattr(sys, 'frozen', False):
-    CONFIG_DIR = Path(os.getenv("APPDATA", PROJECT_ROOT)) / "VoiceTranscribe"
-else:
-    CONFIG_DIR = PROJECT_ROOT
-
+# Config storage - ALWAYS use AppData for consistency
+CONFIG_DIR = Path(os.getenv("APPDATA", Path.home())) / "VoiceTranscribe"
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_FILE = CONFIG_DIR / "config.json"
 TRANSCRIPTS_FILE = CONFIG_DIR / "transcripts.log"
+
+# Load .env from CONFIG_DIR (fixed location)
+ENV_FILE = CONFIG_DIR / ".env"
+
+# If .env doesn't exist in CONFIG_DIR, try to copy from project root
+if not ENV_FILE.exists():
+    source_env = PROJECT_ROOT / ".env"
+    if source_env.exists():
+        import shutil
+        shutil.copy(source_env, ENV_FILE)
+
+load_dotenv(ENV_FILE)
 
 # Audio settings
 RATE = 16000
@@ -365,7 +369,7 @@ def on_close():
 
 root = tk.Tk()
 root.title("Voice Transcribe")
-root.geometry("320x200")
+root.geometry("320x220")
 root.resizable(False, False)
 root.configure(bg="#1a1a2e")
 
@@ -403,7 +407,20 @@ status_label.pack(pady=5)
 # Hotkey hint
 hotkey_label = tk.Label(root, text=f"Hotkey: {hotkey.replace('+', ' + ').title()}",
                         font=("Segoe UI", 8), bg="#1a1a2e", fg="#555")
-hotkey_label.pack(pady=(5, 10))
+hotkey_label.pack(pady=(5, 2))
+
+# Show config location (clickable to open folder)
+def open_config_folder(event=None):
+    os.startfile(CONFIG_DIR)
+
+env_exists = ENV_FILE.exists()
+env_status = "OK" if env_exists else "MISSING"
+config_path_label = tk.Label(root, text=f"Keys: .../{ENV_FILE.parent.name}/{ENV_FILE.name} [{env_status}]",
+                             font=("Segoe UI", 7), bg="#1a1a2e",
+                             fg="#28a745" if env_exists else "#dc3545",
+                             cursor="hand2")
+config_path_label.pack(pady=(0, 5))
+config_path_label.bind("<Button-1>", open_config_folder)
 
 root.protocol("WM_DELETE_WINDOW", on_close)
 

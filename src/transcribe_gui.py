@@ -11,6 +11,7 @@ import wave
 import ctypes
 import tempfile
 import threading
+import winsound
 from pathlib import Path
 from datetime import datetime
 
@@ -63,6 +64,12 @@ load_dotenv(ENV_FILE)
 # Audio settings
 RATE = 16000
 CHUNK = 1024
+PRE_ROLL_CHUNKS = int(0.5 * RATE / CHUNK)  # ~0.5s pre-buffer
+POST_ROLL_CHUNKS = int(0.3 * RATE / CHUNK)  # ~0.3s post-buffer
+MAX_CHUNK_SECONDS = 7 * 60  # 7 minutes - auto-transcribe to avoid API limits
+MAX_CHUNK_FRAMES = int(MAX_CHUNK_SECONDS * RATE / CHUNK)
+CHUNK_OVERLAP_CHUNKS = int(1.0 * RATE / CHUNK)  # ~1s overlap between chunks
+MAX_RECORDING_SECONDS = 30 * 60  # 30 min safety limit - auto-stop to prevent runaway costs
 
 # Available models
 MODELS = {
@@ -77,8 +84,11 @@ MODELS = {
 
 recording = False
 transcribing = False
+chunking = False  # True when auto-transcribing a chunk mid-recording
+recording_start_time = 0  # Track when recording started
 audio_frames = []
-transcription_buffer = ""
+pre_roll_buffer = []  # Always captures last ~0.5s for seamless start
+full_transcript = []  # Accumulates chunks for long recordings
 transcription_lock = threading.Lock()
 tray_icon = None
 
@@ -238,63 +248,109 @@ TRANSCRIBERS = {
 # -----------------------------------------------------
 
 def record_audio():
-    global recording, audio_frames
+    global recording, audio_frames, pre_roll_buffer, chunking, recording_start_time
 
     p = pyaudio.PyAudio()
     stream = p.open(format=pyaudio.paInt16, channels=1, rate=RATE, input=True, frames_per_buffer=CHUNK)
 
     try:
         while True:
+            # Always read audio to keep pre-roll buffer fresh
+            data = stream.read(CHUNK, exception_on_overflow=False)
+
             if recording:
-                data = stream.read(CHUNK, exception_on_overflow=False)
                 audio_frames.append(data)
+
+                # Safety: auto-stop at 30 minutes to prevent runaway costs
+                if recording_start_time and (time.time() - recording_start_time) >= MAX_RECORDING_SECONDS:
+                    # Loud alert - 3 beeps
+                    for _ in range(3):
+                        winsound.Beep(1000, 300)
+                        time.sleep(0.1)
+                    # Trigger stop from main thread
+                    root.after(0, toggle_recording)
+                    continue
+
+                # Auto-chunk at 7 minutes to avoid API limits
+                if len(audio_frames) >= MAX_CHUNK_FRAMES and not chunking:
+                    chunking = True
+                    # Keep overlap for seamless chunk boundaries
+                    overlap = audio_frames[-CHUNK_OVERLAP_CHUNKS:]
+                    frames_to_process = audio_frames[:-CHUNK_OVERLAP_CHUNKS] if CHUNK_OVERLAP_CHUNKS else audio_frames.copy()
+                    audio_frames.clear()
+                    audio_frames.extend(overlap)  # Start next chunk with overlap
+                    threading.Thread(target=process_chunk, args=(frames_to_process,), daemon=True).start()
             else:
-                time.sleep(0.05)
+                # Keep circular pre-roll buffer
+                pre_roll_buffer.append(data)
+                if len(pre_roll_buffer) > PRE_ROLL_CHUNKS:
+                    pre_roll_buffer.pop(0)
     finally:
         stream.stop_stream()
         stream.close()
         p.terminate()
 
-def process_audio():
-    global transcribing, audio_frames, transcription_buffer
-
-    frames = audio_frames.copy()
-    audio_frames.clear()
-
-    if not frames:
-        transcribing = False
-        update_tray('idle')
-        update_status("Ready")
-        return
+def process_chunk(frames):
+    """Transcribe a chunk mid-recording without stopping."""
+    global chunking, full_transcript
 
     temp_file = save_audio_to_temp(frames)
     if not temp_file:
-        transcribing = False
-        update_tray('idle')
-        update_status("Ready")
+        chunking = False
         return
 
-    # Transcribe
     transcriber = TRANSCRIBERS.get(current_model, transcribe_openai_mini)
     text, success = transcriber(temp_file)
 
-    # Cleanup
     try:
         os.remove(temp_file)
     except:
         pass
 
     if success and text:
+        with transcription_lock:
+            full_transcript.append(text)
+
+    chunking = False
+
+def process_audio():
+    global transcribing, audio_frames, full_transcript
+
+    frames = audio_frames.copy()
+    audio_frames.clear()
+
+    # Transcribe final chunk if any
+    final_text = ""
+    if frames:
+        temp_file = save_audio_to_temp(frames)
+        if temp_file:
+            transcriber = TRANSCRIBERS.get(current_model, transcribe_openai_mini)
+            text, success = transcriber(temp_file)
+            try:
+                os.remove(temp_file)
+            except:
+                pass
+            if success and text:
+                final_text = text
+
+    # Combine all chunks
+    with transcription_lock:
+        if final_text:
+            full_transcript.append(final_text)
+        combined_text = " ".join(full_transcript)
+        full_transcript.clear()
+
+    if combined_text:
         # Log transcript
         try:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             with TRANSCRIPTS_FILE.open("a", encoding="utf-8") as f:
-                f.write(f"[{timestamp}] [{MODELS[current_model][0]}]\n{text}\n\n")
+                f.write(f"[{timestamp}] [{MODELS[current_model][0]}]\n{combined_text}\n\n")
         except:
             pass
 
         # Paste
-        pyperclip.copy(text)
+        pyperclip.copy(combined_text)
         time.sleep(0.3)
         try:
             pyautogui.hotkey('ctrl', 'v')
@@ -306,7 +362,7 @@ def process_audio():
     update_status("Ready")
 
 def toggle_recording():
-    global recording, transcribing, audio_frames
+    global recording, transcribing, audio_frames, pre_roll_buffer, full_transcript, recording_start_time
 
     if transcribing:
         return
@@ -320,16 +376,29 @@ def toggle_recording():
     recording = not recording
 
     if recording:
+        # Start recording: prepend pre-roll buffer for seamless start
         audio_frames.clear()
+        full_transcript.clear()  # Clear any previous chunks
+        audio_frames.extend(pre_roll_buffer)
+        pre_roll_buffer.clear()
+        recording_start_time = time.time()  # Track start for 30-min safety limit
         update_status("Recording...")
         record_btn.config(text="Stop", bg="#dc3545")
         update_tray('recording')
     else:
-        update_status("Transcribing...")
+        # Stop recording: wait a bit for trailing audio (post-roll)
+        update_status("Capturing...")
         record_btn.config(text="Record", bg="#28a745")
-        update_tray('transcribing')
-        transcribing = True
-        threading.Thread(target=process_audio, daemon=True).start()
+
+        def delayed_process():
+            global transcribing
+            time.sleep(0.3)  # Post-roll delay
+            update_tray('transcribing')
+            update_status("Transcribing...")
+            transcribing = True
+            process_audio()
+
+        threading.Thread(target=delayed_process, daemon=True).start()
 
 # -----------------------------------------------------
 # UI

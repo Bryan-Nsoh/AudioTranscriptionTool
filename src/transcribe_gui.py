@@ -974,11 +974,41 @@ def show_settings():
 root = ctk.CTk()
 root.withdraw()
 
+# Hotkey debounce - ignore triggers during typing storms
+last_key_time = 0
+last_trigger_time = 0
+HOTKEY_COOLDOWN = 0.4  # Min seconds between triggers
+TYPING_WINDOW = 0.15   # If other keys pressed within this window, ignore
+
+def on_any_key(event):
+    """Track recent key activity to detect typing."""
+    global last_key_time
+    # Ignore modifier keys themselves
+    if event.name not in ('ctrl', 'space', 'shift', 'alt'):
+        last_key_time = time.time()
+
+def on_hotkey():
+    """Only trigger if it's a clean press, not mid-typing."""
+    global last_trigger_time
+    now = time.time()
+
+    # Cooldown - prevent rapid re-triggers
+    if now - last_trigger_time < HOTKEY_COOLDOWN:
+        return
+
+    # If other keys were pressed very recently, we're probably typing
+    if now - last_key_time < TYPING_WINDOW:
+        return
+
+    last_trigger_time = now
+    root.after(0, toggle_recording)
+
 def start_app():
     create_popup()
     threading.Thread(target=record_audio, daemon=True).start()
     threading.Thread(target=setup_tray, daemon=True).start()
-    keyboard.add_hotkey(hotkey, lambda: root.after(0, toggle_recording))
+    keyboard.hook(on_any_key)
+    keyboard.add_hotkey(hotkey, on_hotkey)
 
 start_app()
 root.mainloop()
